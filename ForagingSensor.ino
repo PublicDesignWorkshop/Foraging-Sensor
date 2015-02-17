@@ -1,8 +1,10 @@
-/* 
+/*************************************************** 
+  Foraging Sensor
 
- */
-
-// Include required libraries
+  Built on Adafruit CC3000
+  ----> https://www.adafruit.com/products/1469
+ ****************************************************/
+ 
 #include <Adafruit_CC3000.h>
 #include <ccspi.h>
 #include <SPI.h>
@@ -17,25 +19,16 @@
 #define ADAFRUIT_CC3000_VBAT  5
 #define ADAFRUIT_CC3000_CS    10
 // Use hardware SPI for the remaining pins
-// On an UNO, SCK = 13, MISO = 12, and   MOSI = 11
+// On an UNO, SCK = 13, MISO = 12, and MOSI = 11
 Adafruit_CC3000 cc3000 = Adafruit_CC3000(ADAFRUIT_CC3000_CS, ADAFRUIT_CC3000_IRQ, ADAFRUIT_CC3000_VBAT,
                                          SPI_CLOCK_DIVIDER); // you can change this clock speed
 
-// Buffer for float to String conversion
-// The conversion goes from a float value to a String with two numbers after the decimal.  That means a buffer of size 10 can accommodate a float value up to 999999.99 in order for the last entry to be \0
-char buffer[10];
-
-const unsigned long
-dhcpTimeout     = 60L * 1000L, // Max time to wait for address from DHCP
-connectTimeout  = 15L * 1000L, // Max time to wait for server connection
-responseTimeout = 15L * 1000L; // Max time to wait for data from server
-
-uint32_t t;
+uint32_t ip;
 
 // THINGS THAT NEED CUSTOMIZATION///////////////////////////////////////////////////
 // WiFi network (change with your settings!)
-#define WLAN_SSID       "GTother"          // cannot be longer than 32 characters!
-#define WLAN_PASS       "GeorgeP@1927" 
+#define WLAN_SSID       "YOUR_NETWORK_NAME"          // cannot be longer than 32 characters!
+#define WLAN_PASS       "YOUR_PASSWORD" 
 #define WLAN_SECURITY   WLAN_SEC_WPA2      // Security can be WLAN_SEC_UNSEC, WLAN_SEC_WEP, WLAN_SEC_WPA or WLAN_SEC_WPA2
 
 // define website and folder structure
@@ -50,37 +43,40 @@ String sensorID = "BS001";  //bend sensor 001
 
 // END THINGS THAT NEED CUSTOMIZATION////////////////////////////////////////////////
 
-
-Adafruit_CC3000_Client client;
-
 void setup(void)
 {
-  //establish serial port
   Serial.begin(115200);
-
-  //check to see whether the cc3000 is initialized
-  Serial.print(F("Initializing..."));
-  if(!cc3000.begin()) {
-    Serial.println(F("failed. Check your wiring?"));
-    return;
-  }
-
-  Serial.print(F("OK.\r\nConnecting to network..."));
-  cc3000.connectToAP(WLAN_SSID, WLAN_PASS, WLAN_SECURITY);
-  Serial.println(F("connected!"));
-
-  Serial.print(F("Requesting address from DHCP server..."));
-  for(t=millis(); !cc3000.checkDHCP() && ((millis() - t) < dhcpTimeout); delay(500)) {
-    Serial.println("....waiting");
-  }
-  if(cc3000.checkDHCP()) {
-    Serial.println(F("OK"));
-  } 
-  else {
-    Serial.println(F("failed"));
-    return;
-  }
   
+  /* Initialise the module */
+  Serial.println(F("\nInitializing..."));
+  if (!cc3000.begin())
+  {
+    Serial.println(F("Couldn't begin()! Check your wiring?"));
+    while(1);
+  }
+}
+  
+void loop(void){
+    Serial.print(F("\nAttempting to connect to ")); Serial.println(WLAN_SSID);
+  if (!cc3000.connectToAP(WLAN_SSID, WLAN_PASS, WLAN_SECURITY)) {
+    Serial.println(F("Failed!"));
+    while(1);
+  }
+   
+  Serial.println(F("Connected!"));
+  
+  /* Wait for DHCP to complete */
+  Serial.println(F("Request DHCP"));
+  while (!cc3000.checkDHCP())
+  {
+    delay(100); // ToDo: Insert a DHCP timeout!
+  }  
+
+  /* Display the IP address DNS, Gateway, etc. */  
+  while (! displayConnectionDetails()) {
+    delay(1000);
+  }
+
   ip = 0;
   // Try looking up the website's IP address
   Serial.print(WEBSITE); Serial.print(F(" -> "));
@@ -88,104 +84,123 @@ void setup(void)
     if (! cc3000.getHostByName(WEBSITE, &ip)) {
       Serial.println(F("Couldn't resolve!"));
     }
-    else{
-      Serial.println(F("resolved!"));
-    }
     delay(500);
   }
-}
 
-void loop(void)
-{
-  //Begin the loop by reading the sensorPin
+  cc3000.printIPdotsRev(ip);
+  
+  //Read sensor pin
   sensorValue = analogRead(sensorPin);
-
-  // Transform to String
   String bend = String(sensorValue);
-  Serial.println("Sensor Reading: "+bend);
+  String data = "createBend.php?sid=" + sensorID + "&value=" + bend;
+  
+  //Convert string to char for sending
+  char requestBuf[data.length()+1];
+  data.toCharArray(requestBuf,data.length()); 
 
-  //Open Socket
-  Serial.println("...Connecting to server");
-  t = millis();
-  do {
-    //client = cc3000.connectTCP(ip, port);
-    client = cc3000.connectTCP(ip, 80);
-  } 
-  while((!client.connected()) &&
-    ((millis() - t) < connectTimeout));
-  // Send request
-  if (client.connected()) {
-    Serial.println("Connected"); 
-    String request = "GET "+ repository + "createBend.php?sid=" + sensorID + "&value=" + bend + " HTTP/1.1\r\nHost: " + WEBSITE + "\r\n\r\n";
-    Serial.print("...Sending request:");
-    Serial.println(request);
-    send_request(request);
-  } 
-  else {
+  
+  /* Try connecting to the website.
+     Note: HTTP/1.1 protocol is used to keep the server from closing the connection before all data is read.
+  */
+  Adafruit_CC3000_Client www = cc3000.connectTCP(ip, 80);
+  if (www.connected()) {
+    www.fastrprint(F("GET "));
+    www.fastrprint(WEBPAGE);
+    www.fastrprint(requestBuf);
+    www.fastrprint(F(" HTTP/1.1\r\n"));
+    www.fastrprint(F("Host: ")); 
+    www.fastrprint(WEBSITE); 
+    www.fastrprint(F("\r\n"));
+    www.fastrprint(F("\r\n"));
+    www.println();
+  } else {
     Serial.println(F("Connection failed"));    
     return;
   }
-  Serial.println("...Reading response");
-  show_response();
 
-  Serial.println(F("Cleaning up..."));
-  Serial.println(F("...closing socket"));
-  client.close();
+  Serial.println(F("-------------------------------------"));
   
+  /* Read data until either the connection is closed, or the idle timeout is reached. */ 
+  unsigned long lastRead = millis();
+  while (www.connected() && (millis() - lastRead < IDLE_TIMEOUT_MS)) {
+    while (www.available()) {
+      char c = www.read();
+      Serial.print(c);
+      lastRead = millis();
+    }
+  }
+  www.close();
+  Serial.println(F("-------------------------------------"));
   
-  //wait some amount of time before sending temperature/humidity to the PHP service.
-  //TODO: SLEEP/WAKE 
-  delay(60000);
+  /* You need to make sure to clean up after yourself or the CC3000 can freak out */
+  /* the next time your try to connect ... */
+  Serial.println(F("\n\nDisconnecting"));
+  cc3000.disconnect();
+  
 
+   delay(10000);
 }
-/*******************************************************************************
- * send_request
- ********************************************************************************/
-bool send_request (String request) {
-  // Transform to char
-  char requestBuf[request.length()+1];
-  request.toCharArray(requestBuf,request.length()); 
-  // Send request
-  if (client.connected()) {
-    client.fastrprintln(requestBuf);
-  } 
-  else {
-    Serial.println(F("Connection failed"));    
+
+/**************************************************************************/
+/*!
+    @brief  Begins an SSID scan and prints out all the visible networks
+*/
+/**************************************************************************/
+
+void listSSIDResults(void)
+{
+  uint32_t index;
+  uint8_t valid, rssi, sec;
+  char ssidname[33]; 
+
+  if (!cc3000.startSSIDscan(&index)) {
+    Serial.println(F("SSID scan failed!"));
+    return;
+  }
+
+  Serial.print(F("Networks found: ")); Serial.println(index);
+  Serial.println(F("================================================"));
+
+  while (index) {
+    index--;
+
+    valid = cc3000.getNextSSID(&rssi, &sec, ssidname);
+    
+    Serial.print(F("SSID Name    : ")); Serial.print(ssidname);
+    Serial.println();
+    Serial.print(F("RSSI         : "));
+    Serial.println(rssi);
+    Serial.print(F("Security Mode: "));
+    Serial.println(sec);
+    Serial.println();
+  }
+  Serial.println(F("================================================"));
+
+  cc3000.stopSSIDscan();
+}
+
+/**************************************************************************/
+/*!
+    @brief  Tries to read the IP address and other connection details
+*/
+/**************************************************************************/
+bool displayConnectionDetails(void)
+{
+  uint32_t ipAddress, netmask, gateway, dhcpserv, dnsserv;
+  
+  if(!cc3000.getIPAddress(&ipAddress, &netmask, &gateway, &dhcpserv, &dnsserv))
+  {
+    Serial.println(F("Unable to retrieve the IP Address!\r\n"));
     return false;
   }
-  return true;
-  free(requestBuf);
-}
-/*******************************************************************************
- * show_response
- ********************************************************************************/
-void show_response() {
-  Serial.println(F("--------------------------------"));
-  while (client.available()) {
-    // Read answer and print to serial debug
-    char c = client.read();
-    Serial.print(c);
+  else
+  {
+    Serial.print(F("\nIP Addr: ")); cc3000.printIPdotsRev(ipAddress);
+    Serial.print(F("\nNetmask: ")); cc3000.printIPdotsRev(netmask);
+    Serial.print(F("\nGateway: ")); cc3000.printIPdotsRev(gateway);
+    Serial.print(F("\nDHCPsrv: ")); cc3000.printIPdotsRev(dhcpserv);
+    Serial.print(F("\nDNSserv: ")); cc3000.printIPdotsRev(dnsserv);
+    Serial.println();
+    return true;
   }
-}
-/*******************************************************************************
- * floatToString()
- ********************************************************************************/
-// Float to String conversion
-String floatToString(float number) {
-  //  dtostrf(floatVar, minStringWidthIncDecimalPoint, numVarsAfterDecimal, charBuf);
-  dtostrf(number,5,2,buffer);
-  return String(buffer);
-
-}
-/*******************************************************************************
- * timedRead()
- ********************************************************************************/
-// comment from Adafruit's GeoLocation sketch:
-// Read from client stream with a 5 second timeout.  Although an
-// essentially identical method already exists in the Stream() class,
-// it's declared private there...so this is a local copy.
-char timedRead(void) {
-  unsigned long start = millis();
-  while((!client.available()) && ((millis() - start) < responseTimeout));
-  return client.read();  // -1 on timeout
 }
