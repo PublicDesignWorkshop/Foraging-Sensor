@@ -4,7 +4,7 @@
   Built on Adafruit CC3000
   ----> https://www.adafruit.com/products/1469
  ****************************************************/
- 
+  
 #include <Adafruit_CC3000.h>
 #include <ccspi.h>
 #include <SPI.h>
@@ -23,18 +23,20 @@
 Adafruit_CC3000 cc3000 = Adafruit_CC3000(ADAFRUIT_CC3000_CS, ADAFRUIT_CC3000_IRQ, ADAFRUIT_CC3000_VBAT,
                                          SPI_CLOCK_DIVIDER); // you can change this clock speed
 
+#define IDLE_TIMEOUT_MS  3000      // Amount of time to wait (in milliseconds) with no data 
+                                   // received before closing the connection.  If you know the server
+                                   // you're accessing is quick to respond, you can reduce this value.
 uint32_t ip;
 
 // THINGS THAT NEED CUSTOMIZATION///////////////////////////////////////////////////
 // WiFi network (change with your settings!)
-#define WLAN_SSID       "YOUR_NETWORK_NAME"          // cannot be longer than 32 characters!
-#define WLAN_PASS       "YOUR_PASSWORD" 
+#define WLAN_SSID       "GTother"          // cannot be longer than 32 characters!
+#define WLAN_PASS       "GeorgeP@1927" 
 #define WLAN_SECURITY   WLAN_SEC_WPA2      // Security can be WLAN_SEC_UNSEC, WLAN_SEC_WEP, WLAN_SEC_WPA or WLAN_SEC_WPA2
 
 // define website and folder structure
 #define WEBSITE "publicdesignworkshop.net"
-String repository = "/foraging/core/php/";
-uint32_t ip;
+#define WEBPAGE "/foraging/core/php/"
 
 // Create sensor pin(s), value variable(s), sensor ID
 int sensorPin = A0;
@@ -71,11 +73,6 @@ void loop(void){
   {
     delay(100); // ToDo: Insert a DHCP timeout!
   }  
-
-  /* Display the IP address DNS, Gateway, etc. */  
-  while (! displayConnectionDetails()) {
-    delay(1000);
-  }
 
   ip = 0;
   // Try looking up the website's IP address
