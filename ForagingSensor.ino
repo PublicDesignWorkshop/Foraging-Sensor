@@ -4,7 +4,7 @@
   Built on Adafruit CC3000
   ----> https://www.adafruit.com/products/1469
  ****************************************************/
-  
+ 
 #include <Adafruit_CC3000.h>
 #include <ccspi.h>
 #include <SPI.h>
@@ -27,11 +27,12 @@ Adafruit_CC3000 cc3000 = Adafruit_CC3000(ADAFRUIT_CC3000_CS, ADAFRUIT_CC3000_IRQ
                                    // received before closing the connection.  If you know the server
                                    // you're accessing is quick to respond, you can reduce this value.
 uint32_t ip;
+                                   
 
 // THINGS THAT NEED CUSTOMIZATION///////////////////////////////////////////////////
 // WiFi network (change with your settings!)
-#define WLAN_SSID       "GTother"          // cannot be longer than 32 characters!
-#define WLAN_PASS       "GeorgeP@1927" 
+#define WLAN_SSID       "YOUR_NETWORK_NAME"          // cannot be longer than 32 characters!
+#define WLAN_PASS       "YOUR_PASSWORD"
 #define WLAN_SECURITY   WLAN_SEC_WPA2      // Security can be WLAN_SEC_UNSEC, WLAN_SEC_WEP, WLAN_SEC_WPA or WLAN_SEC_WPA2
 
 // define website and folder structure
@@ -40,6 +41,7 @@ uint32_t ip;
 
 // Create sensor pin(s), value variable(s), sensor ID
 int sensorPin = A0;
+int powerPin  = 8;
 int sensorValue = 0;
 String sensorID = "BS001";  //bend sensor 001
 
@@ -56,10 +58,12 @@ void setup(void)
     Serial.println(F("Couldn't begin()! Check your wiring?"));
     while(1);
   }
+  
 }
   
 void loop(void){
-    Serial.print(F("\nAttempting to connect to ")); Serial.println(WLAN_SSID);
+  digitalWrite(powerPin, HIGH);
+  Serial.print(F("\nAttempting to connect to ")); Serial.println(WLAN_SSID);
   if (!cc3000.connectToAP(WLAN_SSID, WLAN_PASS, WLAN_SECURITY)) {
     Serial.println(F("Failed!"));
     while(1);
@@ -73,6 +77,11 @@ void loop(void){
   {
     delay(100); // ToDo: Insert a DHCP timeout!
   }  
+
+  /* Display the IP address DNS, Gateway, etc. */  
+  while (! displayConnectionDetails()) {
+    delay(1000);
+  }
 
   ip = 0;
   // Try looking up the website's IP address
@@ -95,6 +104,7 @@ void loop(void){
   char requestBuf[data.length()+1];
   data.toCharArray(requestBuf,data.length()); 
 
+  Serial.println("\n\nGET "+ String(WEBPAGE) + data+" HTTP/1.1\r\nHost: " + String(WEBSITE) + "\r\n\r\n");
   
   /* Try connecting to the website.
      Note: HTTP/1.1 protocol is used to keep the server from closing the connection before all data is read.
@@ -136,4 +146,68 @@ void loop(void){
   
 
    delay(10000);
+}
+
+/**************************************************************************/
+/*!
+    @brief  Begins an SSID scan and prints out all the visible networks
+*/
+/**************************************************************************/
+
+void listSSIDResults(void)
+{
+  uint32_t index;
+  uint8_t valid, rssi, sec;
+  char ssidname[33]; 
+
+  if (!cc3000.startSSIDscan(&index)) {
+    Serial.println(F("SSID scan failed!"));
+    return;
+  }
+
+  Serial.print(F("Networks found: ")); Serial.println(index);
+  Serial.println(F("================================================"));
+
+  while (index) {
+    index--;
+
+    valid = cc3000.getNextSSID(&rssi, &sec, ssidname);
+    
+    Serial.print(F("SSID Name    : ")); Serial.print(ssidname);
+    Serial.println();
+    Serial.print(F("RSSI         : "));
+    Serial.println(rssi);
+    Serial.print(F("Security Mode: "));
+    Serial.println(sec);
+    Serial.println();
+  }
+  Serial.println(F("================================================"));
+
+  cc3000.stopSSIDscan();
+}
+
+/**************************************************************************/
+/*!
+    @brief  Tries to read the IP address and other connection details
+*/
+/**************************************************************************/
+bool displayConnectionDetails(void)
+{
+  uint32_t ipAddress, netmask, gateway, dhcpserv, dnsserv;
+  
+  if(!cc3000.getIPAddress(&ipAddress, &netmask, &gateway, &dhcpserv, &dnsserv))
+  {
+    Serial.println(F("Unable to retrieve the IP Address!\r\n"));
+    return false;
+  }
+  else
+  {
+    Serial.print(F("\nIP Addr: ")); cc3000.printIPdotsRev(ipAddress);
+    Serial.print(F("\nNetmask: ")); cc3000.printIPdotsRev(netmask);
+    Serial.print(F("\nGateway: ")); cc3000.printIPdotsRev(gateway);
+    Serial.print(F("\nDHCPsrv: ")); cc3000.printIPdotsRev(dhcpserv);
+    Serial.print(F("\nDNSserv: ")); cc3000.printIPdotsRev(dnsserv);
+    Serial.println();
+    return true;
+  }
 }
