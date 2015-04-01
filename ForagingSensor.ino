@@ -11,6 +11,11 @@
 #include <string.h>
 #include "utility/debug.h"
 
+//including sleep libraries from AVR
+#include <avr/sleep.h>
+#include <avr/power.h>
+#include <avr/wdt.h>
+
 #include<stdlib.h>
 
 // These are the interrupt and control pins
@@ -31,9 +36,9 @@ uint32_t ip;
 
 // THINGS THAT NEED CUSTOMIZATION///////////////////////////////////////////////////
 // WiFi network (change with your settings!)
-#define WLAN_SSID       "YOUR_NETWORK_NAME"          // cannot be longer than 32 characters!
-#define WLAN_PASS       "YOUR_PASSWORD"
-#define WLAN_SECURITY   WLAN_SEC_WPA2      // Security can be WLAN_SEC_UNSEC, WLAN_SEC_WEP, WLAN_SEC_WPA or WLAN_SEC_WPA2
+#define WLAN_SSID       "WIFI_NAME" // Cannot be longer than 32 characters!
+#define WLAN_PASS       "WIFI_PASSWORD"
+#define WLAN_SECURITY   WLAN_SEC_WPA2       // Security can be WLAN_SEC_UNSEC, WLAN_SEC_WEP, WLAN_SEC_WPA or WLAN_SEC_WPA2
 
 // define website and folder structure
 #define WEBSITE "publicdesignworkshop.net"
@@ -42,6 +47,7 @@ uint32_t ip;
 // Create sensor pin(s), value variable(s), sensor ID
 int sensorPin = A0;
 int powerPin  = 8;
+int groundPin = 7;
 int sensorValue = 0;
 String sensorID = "BS001";  //bend sensor 001
 
@@ -63,6 +69,8 @@ void setup(void)
   
 void loop(void){
   digitalWrite(powerPin, HIGH);
+  digitalWrite(groundPin, LOW);
+  
   Serial.print(F("\nAttempting to connect to ")); Serial.println(WLAN_SSID);
   if (!cc3000.connectToAP(WLAN_SSID, WLAN_PASS, WLAN_SECURITY)) {
     Serial.println(F("Failed!"));
