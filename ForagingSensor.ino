@@ -1,183 +1,239 @@
 /*************************************************** 
-  Foraging Sensor
+  CC3000 Low Power Datalogging
+  
+  Example 2: Arduino Power Down Sleep and CC3000 Shutdown
+  
+  Created by Tony DiCola (tony@tonydicola.com)
 
-  Built on Adafruit CC3000
+  Designed specifically to work with the Adafruit WiFi products:
   ----> https://www.adafruit.com/products/1469
- ****************************************************/
- 
-#include <Adafruit_CC3000.h>
-#include <ccspi.h>
-#include <SPI.h>
-#include <string.h>
-#include "utility/debug.h"
 
-//including sleep libraries from AVR
+  Adafruit invests time and resources providing this open source code, 
+  please support Adafruit and open-source hardware by purchasing 
+  products from Adafruit!
+
+  Based on CC3000 examples written by Limor Fried & Kevin Townsend 
+  for Adafruit Industries and released under a BSD license.
+  All text above must be included in any redistribution.
+  
+ ****************************************************/
+
+#include <Adafruit_CC3000.h>
+#include <SPI.h>
 #include <avr/sleep.h>
 #include <avr/power.h>
-#include <avr/wdt.h>
+#include <avr/wdt.h>\
 
-#include<stdlib.h>
+// CC3000 configuration.
+#define ADAFRUIT_CC3000_IRQ    3
+#define ADAFRUIT_CC3000_VBAT   5
+#define ADAFRUIT_CC3000_CS     10
 
-// These are the interrupt and control pins
-#define ADAFRUIT_CC3000_IRQ   3  // MUST be an interrupt pin!
-// These can be any two pins
-#define ADAFRUIT_CC3000_VBAT  5
-#define ADAFRUIT_CC3000_CS    10
-// Use hardware SPI for the remaining pins
-// On an UNO, SCK = 13, MISO = 12, and MOSI = 11
-Adafruit_CC3000 cc3000 = Adafruit_CC3000(ADAFRUIT_CC3000_CS, ADAFRUIT_CC3000_IRQ, ADAFRUIT_CC3000_VBAT,
-                                         SPI_CLOCK_DIVIDER); // you can change this clock speed
+// Wifi network configuration.
+#define WLAN_SSID              "network"
+#define WLAN_PASS              "password"
+#define WLAN_SECURITY          WLAN_SEC_WPA2
 
-#define IDLE_TIMEOUT_MS  3000      // Amount of time to wait (in milliseconds) with no data 
-                                   // received before closing the connection.  If you know the server
-                                   // you're accessing is quick to respond, you can reduce this value.
+// Data logging configuration.
+#define LOGGING_FREQ_SECONDS   60     // Wait an hour between sensor reads (eventually) 
+
+#define SENSOR_PIN             8        // Analog pin to read sensor values from (for example
+                                        // from a photocell or other resistive sensor).
+
+#define SERVER_IP              192, 168, 1, 105    // Logging server IP address.  Note that this
+                                                   // should be separated with commas and NOT periods!
+
+#define SERVER_PORT            8000                // Logging server listening port.
+                                                   
+#define MAX_SLEEP_ITERATIONS   LOGGING_FREQ_SECONDS / 8  // Number of times to sleep (for 8 seconds) before
+                                                         // a sensor reading is taken and sent to the server.
+                                                         // Don't change this unless you also change the 
+                                                         // watchdog timer configuration.
+
+// Internal state used by the sketch.
+Adafruit_CC3000 cc3000 = Adafruit_CC3000(ADAFRUIT_CC3000_CS, ADAFRUIT_CC3000_IRQ, ADAFRUIT_CC3000_VBAT);
+int sleepIterations = 0;
 uint32_t ip;
-                                   
+volatile bool watchdogActivated = false;
 
-// THINGS THAT NEED CUSTOMIZATION///////////////////////////////////////////////////
-// WiFi network (change with your settings!)
-#define WLAN_SSID       "WIFI_NAME" // Cannot be longer than 32 characters!
-#define WLAN_PASS       "WIFI_PASSWORD"
-#define WLAN_SECURITY   WLAN_SEC_WPA2       // Security can be WLAN_SEC_UNSEC, WLAN_SEC_WEP, WLAN_SEC_WPA or WLAN_SEC_WPA2
+// Define watchdog timer interrupt.
+ISR(WDT_vect)
+{
+  // Set the watchdog activated flag.
+  // Note that you shouldn't do much work inside an interrupt handler.
+  watchdogActivated = true;
+}
 
-// define website and folder structure
-#define WEBSITE "publicdesignworkshop.net"
-#define WEBPAGE "/foraging/core/php/"
+// Put the Arduino to sleep.
+void sleep()
+{
+  // Set sleep to full power down.  Only external interrupts or 
+  // the watchdog timer can wake the CPU!
+  set_sleep_mode(SLEEP_MODE_PWR_DOWN);
 
-// Create sensor pin(s), value variable(s), sensor ID
-int sensorPin = A0;
-int powerPin  = 8;
-int groundPin = 7;
-int sensorValue = 0;
-String sensorID = "BS001";  //bend sensor 001
+  // Turn off the ADC while asleep.
+  power_adc_disable();
 
-// END THINGS THAT NEED CUSTOMIZATION////////////////////////////////////////////////
+  // Enable sleep and enter sleep mode.
+  sleep_mode();
+
+  // CPU is now asleep and program execution completely halts!
+  // Once awake, execution will resume at this point.
+  
+  // When awake, disable sleep mode and turn on all devices.
+  sleep_disable();
+  power_all_enable();
+}
+
+// Enable the CC3000 and connect to the wifi network.
+// Return true if enabled and connected, false otherwise.
+boolean enableWiFi() {
+  Serial.println(F("Turning on CC3000."));
+  
+  // Turn on the CC3000.
+  wlan_start(0);
+  
+  // Connect to the AP.
+  if (!cc3000.connectToAP(WLAN_SSID, WLAN_PASS, WLAN_SECURITY)) {
+    // Couldn't connect for some reason.  Fail and move on so the hardware goes back to sleep and tries again later.
+    Serial.println(F("Failed!"));
+    return false;
+  }
+  Serial.println(F("Connected!"));
+  
+  // Wait for DHCP to be complete.  Make a best effort with 5 attempts, then fail and move on.
+  Serial.println(F("Request DHCP"));
+  int attempts = 0;
+  while (!cc3000.checkDHCP())
+  {
+    if (attempts > 5) {
+      Serial.println(F("DHCP didn't finish!"));
+      return false;
+    }
+    attempts += 1;
+    delay(100);
+  }
+  
+  // Return success, the CC3000 is enabled and connected to the network.
+  return true;
+}
+
+// Disconnect from wireless network and shut down the CC3000.
+void shutdownWiFi() {
+  // Disconnect from the AP if connected.
+  // This might not be strictly necessary, but I found
+  // it was sometimes difficult to quickly reconnect to
+  // my AP if I shut down the CC3000 without first
+  // disconnecting from the network.
+  if (cc3000.checkConnected()) {
+    cc3000.disconnect();
+  }
+
+  // Wait for the CC3000 to finish disconnecting before
+  // continuing.
+  while (cc3000.checkConnected()) {
+    delay(100);
+  }
+  
+  // Shut down the CC3000.
+  wlan_stop();
+  
+  Serial.println(F("CC3000 shut down.")); 
+}
+
+// Take a sensor reading and send it to the server.
+void logSensorReading() {
+  // Take a sensor reading
+  int reading = analogRead(SENSOR_PIN);
+  
+  // Connect to the server and send the reading.
+  Serial.print(F("Sending measurement: ")); Serial.println(reading, DEC);
+  Adafruit_CC3000_Client server = cc3000.connectTCP(ip, SERVER_PORT);
+  if (server.connected()) {
+    server.println(reading);
+  }
+  else {
+    Serial.println(F("Error sending measurement!"));
+  }
+  
+  // Note that if you're sending a lot of data you
+  // might need to tweak the delay here so the CC3000 has
+  // time to finish sending all the data before shutdown.
+  delay(100);
+  
+  // Close the connection to the server.
+  server.close();
+}
 
 void setup(void)
-{
+{  
   Serial.begin(115200);
   
-  /* Initialise the module */
-  Serial.println(F("\nInitializing..."));
+  // Initialize the CC3000.
+  Serial.println(F("\nInitializing CC3000..."));
   if (!cc3000.begin())
   {
     Serial.println(F("Couldn't begin()! Check your wiring?"));
     while(1);
   }
-  
-}
-  
-void loop(void){
-  digitalWrite(powerPin, HIGH);
-  digitalWrite(groundPin, LOW);
-  
-  Serial.print(F("\nAttempting to connect to ")); Serial.println(WLAN_SSID);
-  if (!cc3000.connectToAP(WLAN_SSID, WLAN_PASS, WLAN_SECURITY)) {
-    Serial.println(F("Failed!"));
-    while(1);
-  }
-   
-  Serial.println(F("Connected!"));
-  
-  /* Wait for DHCP to complete */
-  Serial.println(F("Request DHCP"));
-  while (!cc3000.checkDHCP())
-  {
-    delay(100); // ToDo: Insert a DHCP timeout!
-  }  
 
-  /* Display the IP address DNS, Gateway, etc. */  
-  while (! displayConnectionDetails()) {
-    delay(1000);
-  }
+  // Turn off the CC3000--it will be turned on later to
+  // take sensor readings and send them to the server.
+  wlan_stop(); 
+  
+  // Store the IP of the server.
+  ip = cc3000.IP2U32(SERVER_IP);
+ 
+  // Setup the watchdog timer to run an interrupt which
+  // wakes the Arduino from sleep every 8 seconds.
+  
+  // Note that the default behavior of resetting the Arduino
+  // with the watchdog will be disabled.
+  
+  // This next section of code is timing critical, so interrupts are disabled.
+  // See more details of how to change the watchdog in the ATmega328P datasheet
+  // around page 50, Watchdog Timer.
+  noInterrupts();
+  
+  // Set the watchdog reset bit in the MCU status register to 0.
+  MCUSR &= ~(1<<WDRF);
+  
+  // Set WDCE and WDE bits in the watchdog control register.
+  WDTCSR |= (1<<WDCE) | (1<<WDE);
 
-  ip = 0;
-  // Try looking up the website's IP address
-  Serial.print(WEBSITE); Serial.print(F(" -> "));
-  while (ip == 0) {
-    if (! cc3000.getHostByName(WEBSITE, &ip)) {
-      Serial.println(F("Couldn't resolve!"));
-    }
-    delay(500);
-  }
-
-  cc3000.printIPdotsRev(ip);
+  // Set watchdog clock prescaler bits to a value of 8 seconds.
+  WDTCSR = (1<<WDP0) | (1<<WDP3);
   
-  //Read sensor pin
-  sensorValue = analogRead(sensorPin);
-  String bend = String(sensorValue);
-  String data = "createBend.php?sid=" + sensorID + "&value=" + bend;
+  // Enable watchdog as interrupt only (no reset).
+  WDTCSR |= (1<<WDIE);
   
-  //Convert string to char for sending
-  char requestBuf[data.length()+1];
-  data.toCharArray(requestBuf,data.length()); 
-
-  Serial.println("\n\nGET "+ String(WEBPAGE) + data+" HTTP/1.1\r\nHost: " + String(WEBSITE) + "\r\n\r\n");
+  // Enable interrupts again.
+  interrupts();
   
-  /* Try connecting to the website.
-     Note: HTTP/1.1 protocol is used to keep the server from closing the connection before all data is read.
-  */
-  Adafruit_CC3000_Client www = cc3000.connectTCP(ip, 80);
-  if (www.connected()) {
-    www.fastrprint(F("GET "));
-    www.fastrprint(WEBPAGE);
-    www.fastrprint(requestBuf);
-    www.fastrprint(F(" HTTP/1.1\r\n"));
-    www.fastrprint(F("Host: ")); 
-    www.fastrprint(WEBSITE); 
-    www.fastrprint(F("\r\n"));
-    www.fastrprint(F("\r\n"));
-    www.println();
-  } else {
-    Serial.println(F("Connection failed"));    
-    return;
-  }
-
-  Serial.println(F("-------------------------------------"));
-  
-  /* Read data until either the connection is closed, or the idle timeout is reached. */ 
-  unsigned long lastRead = millis();
-  while (www.connected() && (millis() - lastRead < IDLE_TIMEOUT_MS)) {
-    while (www.available()) {
-      char c = www.read();
-      Serial.print(c);
-      lastRead = millis();
-    }
-  }
-  www.close();
-  Serial.println(F("-------------------------------------"));
-  
-  /* You need to make sure to clean up after yourself or the CC3000 can freak out */
-  /* the next time your try to connect ... */
-  Serial.println(F("\n\nDisconnecting"));
-  cc3000.disconnect();
-  
-
-   delay(10000);
+  Serial.println(F("Setup complete."));
 }
 
-/**************************************************************************/
-/*!
-    @brief  Tries to read the IP address and other connection details
-*/
-/**************************************************************************/
-bool displayConnectionDetails(void)
+void loop(void)
 {
-  uint32_t ipAddress, netmask, gateway, dhcpserv, dnsserv;
+  // Don't do anything unless the watchdog timer interrupt has fired.
+  if (watchdogActivated)
+  {
+    watchdogActivated = false;
+    // Increase the count of sleep iterations and take a sensor
+    // reading once the max number of iterations has been hit.
+    sleepIterations += 1;
+    if (sleepIterations >= MAX_SLEEP_ITERATIONS) {
+      // Reset the number of sleep iterations.
+      sleepIterations = 0;
+      // Log the sensor data (waking the CC3000, etc. as needed)
+      if (enableWiFi()) {
+        logSensorReading();
+      }
+      shutdownWiFi();
+    }
+  }
   
-  if(!cc3000.getIPAddress(&ipAddress, &netmask, &gateway, &dhcpserv, &dnsserv))
-  {
-    Serial.println(F("Unable to retrieve the IP Address!\r\n"));
-    return false;
-  }
-  else
-  {
-    Serial.print(F("\nIP Addr: ")); cc3000.printIPdotsRev(ipAddress);
-    Serial.print(F("\nNetmask: ")); cc3000.printIPdotsRev(netmask);
-    Serial.print(F("\nGateway: ")); cc3000.printIPdotsRev(gateway);
-    Serial.print(F("\nDHCPsrv: ")); cc3000.printIPdotsRev(dhcpserv);
-    Serial.print(F("\nDNSserv: ")); cc3000.printIPdotsRev(dnsserv);
-    Serial.println();
-    return true;
-  }
+  // Go to sleep!
+  sleep();
 }
+
