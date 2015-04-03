@@ -30,25 +30,29 @@
 #define ADAFRUIT_CC3000_CS     10
 
 // Wifi network configuration.
-#define WLAN_SSID              "network"
-#define WLAN_PASS              "password"
+#define WLAN_SSID              "NETEWORK_NAME"
+#define WLAN_PASS              "NETWORK_PASSWORD"
 #define WLAN_SECURITY          WLAN_SEC_WPA2
 
+// Create sensor pin(s), sensor ID
+#define SENSOR_PIN   A0
+#define POWER_PIN    8
+#define GROUND_PIN   7
+String sensorID = "BS001";  //bend sensor 001
+
 // Data logging configuration.
-#define LOGGING_FREQ_SECONDS   60     // Wait an hour between sensor reads (eventually) 
+#define LOGGING_FREQ_SECONDS   60     // Wait an hour between sensor reads (eventually)                                                    
 
-#define SENSOR_PIN             8        // Analog pin to read sensor values from (for example
-                                        // from a photocell or other resistive sensor).
-
-#define SERVER_IP              192, 168, 1, 105    // Logging server IP address.  Note that this
-                                                   // should be separated with commas and NOT periods!
-
-#define SERVER_PORT            8000                // Logging server listening port.
-                                                   
 #define MAX_SLEEP_ITERATIONS   LOGGING_FREQ_SECONDS / 8  // Number of times to sleep (for 8 seconds) before
                                                          // a sensor reading is taken and sent to the server.
                                                          // Don't change this unless you also change the 
                                                          // watchdog timer configuration.
+                                                         
+// Server configuration.
+#define WEBSITE "publicdesignworkshop.net"  
+
+#define WEBPAGE "/foraging/core/php/"
+
 
 // Internal state used by the sketch.
 Adafruit_CC3000 cc3000 = Adafruit_CC3000(ADAFRUIT_CC3000_CS, ADAFRUIT_CC3000_IRQ, ADAFRUIT_CC3000_VBAT);
@@ -143,14 +147,44 @@ void shutdownWiFi() {
 
 // Take a sensor reading and send it to the server.
 void logSensorReading() {
+  // Get IP of server
+  ip = 0;
+  // Try looking up the website's IP address
+  Serial.print(WEBSITE); Serial.print(F(" -> "));
+  while (ip == 0) {
+    if (! cc3000.getHostByName(WEBSITE, &ip)) {
+      Serial.println(F("Couldn't resolve!"));
+    }
+    else (Serial.println(ip));
+    delay(500);
+  }
+  
   // Take a sensor reading
   int reading = analogRead(SENSOR_PIN);
+  String bend = String(reading);
+  String data = "createBend.php?sid=" + sensorID + "&value=" + bend;
   
+  //Convert string to char for sending
+  char requestBuf[data.length()+1];
+  data.toCharArray(requestBuf,data.length()); 
+
   // Connect to the server and send the reading.
   Serial.print(F("Sending measurement: ")); Serial.println(reading, DEC);
-  Adafruit_CC3000_Client server = cc3000.connectTCP(ip, SERVER_PORT);
+  Serial.println("\n\nGET "+ String(WEBPAGE) + data+" HTTP/1.1\r\nHost: " + String(WEBSITE) + "\r\n\r\n");
+  
+  Adafruit_CC3000_Client server = cc3000.connectTCP(ip, 80);
   if (server.connected()) {
-    server.println(reading);
+    Serial.print(F("connected to server..."));
+    server.fastrprint(F("GET "));
+    server.fastrprint(WEBPAGE);
+    server.fastrprint(requestBuf);
+    server.fastrprint(F(" HTTP/1.1\r\n"));
+    server.fastrprint(F("Host: ")); 
+    server.fastrprint(WEBSITE); 
+    server.fastrprint(F("\r\n"));
+    server.fastrprint(F("\r\n"));
+    server.println();
+    Serial.println(F(" measurement sent."));
   }
   else {
     Serial.println(F("Error sending measurement!"));
@@ -159,7 +193,8 @@ void logSensorReading() {
   // Note that if you're sending a lot of data you
   // might need to tweak the delay here so the CC3000 has
   // time to finish sending all the data before shutdown.
-  delay(100);
+  delay(500);
+  Serial.println(F("Success!"));
   
   // Close the connection to the server.
   server.close();
@@ -181,8 +216,6 @@ void setup(void)
   // take sensor readings and send them to the server.
   wlan_stop(); 
   
-  // Store the IP of the server.
-  ip = cc3000.IP2U32(SERVER_IP);
  
   // Setup the watchdog timer to run an interrupt which
   // wakes the Arduino from sleep every 8 seconds.
@@ -228,8 +261,10 @@ void loop(void)
       // Log the sensor data (waking the CC3000, etc. as needed)
       if (enableWiFi()) {
         logSensorReading();
+        Serial.print("End logSensorReading()");
       }
       shutdownWiFi();
+      Serial.print("End shutdownWiFi()");
     }
   }
   
